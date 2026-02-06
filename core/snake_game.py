@@ -21,8 +21,8 @@ class StepResult:
 
 class SnakeGame:
     """
-    Pure game logic: reset() and step().
-    RL-ready because it can run headless (no rendering).
+    Pure game logic: reset() and step() for Human,
+    plus step_action() for AI (left/straight/right).
     """
     def __init__(self, width: int = 20, height: int = 20, init_length: int = 3):
         self.width = width
@@ -32,37 +32,61 @@ class SnakeGame:
 
     def reset(self) -> StepResult:
         cx, cy = self.width // 2, self.height // 2
-
-        # Start moving right with a horizontal snake
         self.direction: Dir = RIGHT
         self.snake: List[Pos] = [(cx - i, cy) for i in range(self.init_length)]
-
         self.score = 0
         self.done = False
         self._spawn_food()
-
         return self._result(ate_food=False)
 
     def _spawn_food(self) -> None:
         empty = [(x, y) for x in range(self.width) for y in range(self.height) if (x, y) not in self.snake]
-        self.food = random.choice(empty) if empty else (-1, -1)  # (-1,-1) means no space left (win)
+        self.food = random.choice(empty) if empty else (-1, -1)
 
     @staticmethod
     def _is_opposite(a: Dir, b: Dir) -> bool:
         return a[0] == -b[0] and a[1] == -b[1]
 
+    @staticmethod
+    def _turn_left(d: Dir) -> Dir:
+        dx, dy = d
+        return (dy, -dx)
+
+    @staticmethod
+    def _turn_right(d: Dir) -> Dir:
+        dx, dy = d
+        return (-dy, dx)
+
+    def get_state(self) -> StepResult:
+        return self._result(ate_food=False)
+
+    # ---------- Human step (absolute direction) ----------
     def step(self, new_direction: Optional[Dir] = None) -> StepResult:
+        if self.done:
+            return self._result(ate_food=False)
+
+        if new_direction is not None and not self._is_opposite(new_direction, self.direction):
+            self.direction = new_direction
+
+        return self._advance()
+
+    # ---------- AI step (relative action) ----------
+    def step_action(self, action: int) -> StepResult:
         """
-        Advance the game by 1 tick.
-        new_direction: UP/DOWN/LEFT/RIGHT (optional). Opposite direction is ignored.
+        action: 0=left, 1=straight, 2=right
         """
         if self.done:
             return self._result(ate_food=False)
 
-        # Update direction if provided and not opposite
-        if new_direction is not None and not self._is_opposite(new_direction, self.direction):
-            self.direction = new_direction
+        if action == 0:
+            self.direction = self._turn_left(self.direction)
+        elif action == 2:
+            self.direction = self._turn_right(self.direction)
+        # action==1 -> straight (no change)
 
+        return self._advance()
+
+    def _advance(self) -> StepResult:
         hx, hy = self.snake[0]
         dx, dy = self.direction
         new_head: Pos = (hx + dx, hy + dy)
@@ -77,7 +101,6 @@ class SnakeGame:
             self.done = True
             return self._result(ate_food=False)
 
-        # Move head
         self.snake.insert(0, new_head)
 
         ate_food = (new_head == self.food)
@@ -85,18 +108,12 @@ class SnakeGame:
             self.score += 1
             self._spawn_food()
         else:
-            # remove tail if not eating
             self.snake.pop()
 
-        # If no space left for food, you "win"
         if self.food == (-1, -1):
             self.done = True
 
         return self._result(ate_food=ate_food)
-
-    def get_state(self) -> StepResult:
-        """Return current state without stepping (safe for UI)."""
-        return self._result(ate_food=False)
 
     def _result(self, ate_food: bool) -> StepResult:
         return StepResult(
