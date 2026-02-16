@@ -1,7 +1,3 @@
-# frontend/pygame_app.py
-# Run from project root:
-#   python -m frontend.pygame_app
-
 import os
 import glob
 import shutil
@@ -45,8 +41,7 @@ SPEED_LEVELS = [
 ]
 
 
-# ---------------- AI OBSERVATION (feature vector) ----------------
-# Feature vector (11):
+# ---------------- AI OBSERVATION ----------------
 # danger_ahead, danger_left, danger_right (3)
 # food_up, food_down, food_left, food_right (4)
 # dir_up, dir_down, dir_left, dir_right (4)
@@ -121,11 +116,6 @@ def draw_text(screen, font, msg, x, y, color=TEXT):
 
 
 def pick_model_file():
-    """
-    macOS-safe file picker:
-    Runs tkinter filedialog in a separate process to avoid SDL/Pygame crash.
-    Returns selected path or "".
-    """
     code = r"""
 import tkinter as tk
 from tkinter import filedialog
@@ -135,8 +125,8 @@ root.withdraw()
 root.attributes("-topmost", True)
 
 path = filedialog.askopenfilename(
-    title="Select Stable-Baselines3 model (.zip)",
-    filetypes=[("SB3 Model", "*.zip")]
+    title="Select AI model (.zip or .pth)",
+    filetypes=[("AI Model", "*.zip *.pth"), ("SB3 Model", "*.zip"), ("PyTorch Weights", "*.pth")]
 )
 
 try:
@@ -159,23 +149,62 @@ print(path if path else "")
 
 
 def load_models_list():
-    paths = glob.glob(os.path.join("models", "*.zip"))
+    paths = glob.glob(os.path.join("models", "*.zip")) + glob.glob(os.path.join("models", "*.pth"))
     paths.sort()
     return paths
 
 
-def try_load_sb3_model(path: str):
-    # Lazy import so HUMAN mode works even without SB3 installed
-    from stable_baselines3 import DQN, PPO
+def try_load_model(path: str):
+    if path.lower().endswith(".zip"):
+        # Lazy import so HUMAN mode works even without SB3 installed
+        from stable_baselines3 import DQN, PPO
 
-    for cls in (DQN, PPO):
+        for cls in (DQN, PPO):
+            try:
+                return cls.load(path)
+            except Exception:
+                pass
+        raise RuntimeError("Could not load .zip model. Ensure it's an SB3 DQN/PPO .zip.")
+
+    # ---------- Case 2: PyTorch pth ----------
+    if path.lower().endswith(".pth"):
         try:
-            return cls.load(path)
-        except Exception:
-            pass
-    raise RuntimeError(
-        "Could not load model. Ensure it's a Stable-Baselines3 DQN/PPO .zip model."
-    )
+            import torch
+            import torch.nn as nn
+            import torch.nn.functional as F
+        except Exception as e:
+            raise RuntimeError(f"PyTorch not available. Install torch to load .pth. ({e})")
+
+        class LinearQNet(nn.Module):
+            def __init__(self, input_size=11, hidden_size=128, output_size=3):
+                super().__init__()
+                self.fc1 = nn.Linear(input_size, hidden_size)
+                self.fc2 = nn.Linear(hidden_size, hidden_size)
+                self.fc3 = nn.Linear(hidden_size, output_size)
+
+            def forward(self, x):
+                x = F.relu(self.fc1(x))
+                x = F.relu(self.fc2(x))
+                return self.fc3(x)
+
+        class TorchDQNWrapper:
+            def __init__(self, pth_path: str):
+                self.device = "cpu"
+                self.net = LinearQNet(input_size=11, hidden_size=128, output_size=3).to(self.device)
+                sd = torch.load(pth_path, map_location=self.device)
+                self.net.load_state_dict(sd)
+                self.net.eval()
+
+            def predict(self, obs, deterministic=True):
+                x = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                with torch.no_grad():
+                    q = self.net(x)
+                action = int(torch.argmax(q, dim=1).item())
+                return action, None
+
+        return TorchDQNWrapper(path)
+
+    raise RuntimeError("Unsupported model file. Use .zip or .pth")
 
 
 # ---------------- Main App ----------------
@@ -197,9 +226,7 @@ def main():
     small = pygame.font.SysFont("Arial", 18)
     tiny = pygame.font.SysFont("Arial", 16)
 
-    # modes:
-    # choose_mode -> choose_settings_human -> game_human
-    # choose_settings_ai -> game_ai
+
     mode = "choose_mode"
 
     selected_speed_idx = 1  # Medium
@@ -262,7 +289,7 @@ def main():
             ai_error = "No models found."
             return
         try:
-            ai_model = try_load_sb3_model(models[selected_model_idx])
+            ai_model = try_load_model(models[selected_model_idx])
             mode = "game_ai"
         except Exception as e:
             ai_error = str(e)
@@ -340,7 +367,7 @@ def main():
                 # Drag & drop file
                 if event.type == pygame.DROPFILE:
                     dropped = event.file
-                    if dropped.lower().endswith(".zip"):
+                    if dropped.lower().endswith((".zip", ".pth")):
                         os.makedirs("models", exist_ok=True)
                         dest = os.path.join("models", os.path.basename(dropped))
                         try:
@@ -351,7 +378,7 @@ def main():
                         except Exception:
                             ai_error = "Upload failed"
                     else:
-                        ai_error = "Drop a .zip file"
+                        ai_error = "Drop a .zip or .pth file"
 
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_UP:
@@ -450,7 +477,7 @@ def main():
                                         upload_btn.centery - upload_txt.get_height() // 2))
 
                 # Hint + small inline error beside hint
-                hint = tiny.render("(or drag & drop .zip)", True, MUTED)
+                hint = tiny.render("(or drag & drop .zip/.pth)", True, MUTED)
                 hint_x = center_x - hint.get_width() // 2
                 hint_y = upload_btn.bottom + 6
                 screen.blit(hint, (hint_x, hint_y))

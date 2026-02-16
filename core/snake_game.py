@@ -1,6 +1,7 @@
 import random
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
+import numpy as np
 
 Pos = Tuple[int, int]
 Dir = Tuple[int, int]
@@ -20,10 +21,6 @@ class StepResult:
     ate_food: bool
 
 class SnakeGame:
-    """
-    Pure game logic: reset() and step() for Human,
-    plus step_action() for AI (left/straight/right).
-    """
     def __init__(self, width: int = 20, height: int = 20, init_length: int = 3):
         self.width = width
         self.height = height
@@ -97,7 +94,7 @@ class SnakeGame:
             return self._result(ate_food=False)
 
         # Self collision
-        if new_head in self.snake:
+        if new_head in self.snake[:-1]:
             self.done = True
             return self._result(ate_food=False)
 
@@ -124,3 +121,42 @@ class SnakeGame:
             done=self.done,
             ate_food=ate_food,
         )
+
+    def get_observation(self) -> np.ndarray:
+        head = self.snake[0]
+
+        def will_collide(pos):
+            x, y = pos
+            if x < 0 or x >= self.width or y < 0 or y >= self.height:
+                return True
+            # tail moves away if not eating
+            if pos in self.snake[:-1]:
+                return True
+            return False
+
+        straight = self.direction
+        left = self._turn_left(self.direction)
+        right = self._turn_right(self.direction)
+
+        def next_pos(d):
+            return (head[0] + d[0], head[1] + d[1])
+
+        danger_straight = 1 if will_collide(next_pos(straight)) else 0
+        danger_left = 1 if will_collide(next_pos(left)) else 0
+        danger_right = 1 if will_collide(next_pos(right)) else 0
+
+        food_left = 1 if self.food[0] < head[0] else 0
+        food_right = 1 if self.food[0] > head[0] else 0
+        food_up = 1 if self.food[1] < head[1] else 0
+        food_down = 1 if self.food[1] > head[1] else 0
+
+        moving_left = 1 if self.direction == LEFT else 0
+        moving_right = 1 if self.direction == RIGHT else 0
+        moving_up = 1 if self.direction == UP else 0
+        moving_down = 1 if self.direction == DOWN else 0
+
+        return np.array([
+            danger_straight, danger_left, danger_right,
+            food_left, food_right, food_up, food_down,
+            moving_left, moving_right, moving_up, moving_down
+        ], dtype=np.float32)
